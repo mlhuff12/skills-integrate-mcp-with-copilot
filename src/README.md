@@ -51,4 +51,4 @@ The application uses persistent SQL models and stores data in `src/school.db` by
    - Student email
 
 On startup, the app creates tables automatically and seeds initial activities if the database is empty.
-Set `DATABASE_URL` to point to a different DB (for example Postgres) if needed.
+By default the app uses SQLite and works out of the box. To use a different database (for example Postgres), you must install the appropriate database driver (e.g. `psycopg`) and set `DATABASE_URL` to a valid SQLAlchemy DSN such as `postgresql+psycopg://user:password@host:5432/dbname`.
