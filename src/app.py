@@ -5,16 +5,29 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
+from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
 from pathlib import Path
 from sqlalchemy import Column, ForeignKey, Integer, String, UniqueConstraint, create_engine
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 
-app = FastAPI(title="Mergington High School API",
-              description="API for viewing and signing up for extracurricular activities")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        _seed_data_if_needed(db)
+    yield
+
+
+app = FastAPI(
+    title="Mergington High School API",
+    description="API for viewing and signing up for extracurricular activities",
+    lifespan=lifespan,
+)
 
 # Mount the static files directory
 current_dir = Path(__file__).parent
@@ -160,11 +173,11 @@ def _activity_to_response(activity: Activity):
     }
 
 
-@app.on_event("startup")
-def startup_event():
-    Base.metadata.create_all(bind=engine)
-    with SessionLocal() as db:
-        _seed_data_if_needed(db)
+def _normalize_email_or_400(email: str) -> str:
+    normalized_email = email.strip().lower()
+    if not normalized_email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    return normalized_email
 
 
 @app.get("/")
@@ -181,6 +194,8 @@ def get_activities(db: Session = Depends(get_db)):
 @app.post("/activities/{activity_name}/signup")
 def signup_for_activity(activity_name: str, email: str, db: Session = Depends(get_db)):
     """Sign up a student for an activity"""
+    email = _normalize_email_or_400(email)
+
     activity = db.query(Activity).filter(Activity.name == activity_name).first()
     if activity is None:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -200,13 +215,23 @@ def signup_for_activity(activity_name: str, email: str, db: Session = Depends(ge
         raise HTTPException(status_code=400, detail="Activity is full")
 
     db.add(ActivityParticipant(activity_id=activity.id, email=email))
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Student is already signed up")
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Unable to complete signup at this time")
+
     return {"message": f"Signed up {email} for {activity_name}"}
 
 
 @app.delete("/activities/{activity_name}/unregister")
 def unregister_from_activity(activity_name: str, email: str, db: Session = Depends(get_db)):
     """Unregister a student from an activity"""
+    email = _normalize_email_or_400(email)
+
     activity = db.query(Activity).filter(Activity.name == activity_name).first()
     if activity is None:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -220,5 +245,10 @@ def unregister_from_activity(activity_name: str, email: str, db: Session = Depen
         raise HTTPException(status_code=400, detail="Student is not signed up for this activity")
 
     db.delete(signup)
-    db.commit()
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Unable to complete unregister at this time")
+
     return {"message": f"Unregistered {email} from {activity_name}"}
